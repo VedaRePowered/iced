@@ -225,7 +225,19 @@ pub fn window_event(
                     event.text_with_all_modifiers().map(SmolStr::new)
                 }
 
-                #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+                #[cfg(target_os = "android")]
+                {
+                    if event.text.is_some() {
+                        event.text
+                    } else {
+                        match &key {
+                            winit::keyboard::Key::Character(c) => Some(c.clone()),
+                            _ => None,
+                        }
+                    }
+                }
+
+                #[cfg(target_arch = "wasm32")]
                 {
                     // TODO: Fix inconsistent API on Wasm
                     event.text
