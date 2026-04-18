@@ -111,6 +111,8 @@ where
     on_input: Option<Box<dyn Fn(String) -> Message + 'a>>,
     on_paste: Option<Box<dyn Fn(String) -> Message + 'a>>,
     on_submit: Option<Message>,
+    on_focus: Option<Message>,
+    on_blur: Option<Message>,
     icon: Option<Icon<Renderer::Font>>,
     class: Theme::Class<'a>,
     last_status: Option<Status>,
@@ -142,6 +144,8 @@ where
             on_input: None,
             on_paste: None,
             on_submit: None,
+            on_focus: None,
+            on_blur: None,
             icon: None,
             class: Theme::default(),
             last_status: None,
@@ -203,6 +207,34 @@ where
     /// the [`TextInput`], if `Some`.
     pub fn on_paste_maybe(mut self, on_paste: Option<impl Fn(String) -> Message + 'a>) -> Self {
         self.on_paste = on_paste.map(|f| Box::new(f) as _);
+        self
+    }
+
+    /// Sets the message that should be produced when the [`TextInput`] is
+    /// newly focused.
+    pub fn on_focus(mut self, message: Message) -> Self {
+        self.on_focus = Some(message);
+        self
+    }
+
+    /// Sets the message that should be produced when the [`TextInput`] is
+    /// newly focused, if `Some`.
+    pub fn on_focus_maybe(mut self, message: Option<Message>) -> Self {
+        self.on_focus = message;
+        self
+    }
+
+    /// Sets the message that should be produced when the [`TextInput`] is
+    /// newly blurred (unfocused).
+    pub fn on_blur(mut self, message: Message) -> Self {
+        self.on_blur = Some(message);
+        self
+    }
+
+    /// Sets the message that should be produced when the [`TextInput`] is
+    /// newly blurred (unfocused), if `Some`.
+    pub fn on_blur_maybe(mut self, message: Option<Message>) -> Self {
+        self.on_blur = message;
         self
     }
 
@@ -663,10 +695,12 @@ where
             );
         };
 
+        let state = state::<Renderer>(tree);
+        let previously_focused = state.is_focused.is_some();
+
         match &event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerPressed { .. }) => {
-                let state = state::<Renderer>(tree);
                 let cursor_before = state.cursor;
 
                 let click_position = cursor.position_over(layout.bounds());
@@ -766,12 +800,10 @@ where
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerLifted { .. })
             | Event::Touch(touch::Event::FingerLost { .. }) => {
-                state::<Renderer>(tree).is_dragging = None;
+                state.is_dragging = None;
             }
             Event::Mouse(mouse::Event::CursorMoved { position })
             | Event::Touch(touch::Event::FingerMoved { position, .. }) => {
-                let state = state::<Renderer>(tree);
-
                 if let Some(is_dragging) = &state.is_dragging {
                     let text_layout = layout.children().next().unwrap();
 
@@ -838,8 +870,6 @@ where
                 physical_key,
                 ..
             }) => {
-                let state = state::<Renderer>(tree);
-
                 if let Some(focus) = &mut state.is_focused {
                     let modifiers = state.keyboard_modifiers;
 
@@ -1130,8 +1160,6 @@ where
                 }
             }
             Event::Keyboard(keyboard::Event::KeyReleased { key, .. }) => {
-                let state = state::<Renderer>(tree);
-
                 if state.is_focused.is_some()
                     && let keyboard::Key::Character("v") = key.as_ref()
                 {
@@ -1142,16 +1170,12 @@ where
                 state.is_pasting = None;
             }
             Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
-                let state = state::<Renderer>(tree);
-
                 state.keyboard_modifiers = *modifiers;
             }
             Event::Clipboard(clipboard::Event::Read(Ok(content))) => {
                 let Some(on_input) = &self.on_input else {
                     return;
                 };
-
-                let state = state::<Renderer>(tree);
 
                 let Some(focus) = &mut state.is_focused else {
                     return;
@@ -1180,16 +1204,12 @@ where
             }
             Event::InputMethod(event) => match event {
                 input_method::Event::Opened | input_method::Event::Closed => {
-                    let state = state::<Renderer>(tree);
-
                     state.preedit = matches!(event, input_method::Event::Opened)
                         .then(input_method::Preedit::new);
 
                     shell.request_redraw();
                 }
                 input_method::Event::Preedit(content, selection) => {
-                    let state = state::<Renderer>(tree);
-
                     if state.is_focused.is_some() {
                         state.preedit = Some(input_method::Preedit {
                             content: content.to_owned(),
@@ -1201,8 +1221,6 @@ where
                     }
                 }
                 input_method::Event::Commit(text) => {
-                    let state = state::<Renderer>(tree);
-
                     if let Some(focus) = &mut state.is_focused {
                         let Some(on_input) = &self.on_input else {
                             return;
@@ -1223,15 +1241,11 @@ where
                 }
             },
             Event::Window(window::Event::Unfocused) => {
-                let state = state::<Renderer>(tree);
-
                 if let Some(focus) = &mut state.is_focused {
                     focus.is_window_focused = false;
                 }
             }
             Event::Window(window::Event::Focused) => {
-                let state = state::<Renderer>(tree);
-
                 if let Some(focus) = &mut state.is_focused {
                     focus.is_window_focused = true;
                     focus.updated_at = Instant::now();
@@ -1240,8 +1254,6 @@ where
                 }
             }
             Event::Window(window::Event::RedrawRequested(now)) => {
-                let state = state::<Renderer>(tree);
-
                 if let Some(focus) = &mut state.is_focused
                     && focus.is_window_focused
                 {
@@ -1262,7 +1274,19 @@ where
             _ => {}
         }
 
-        let state = state::<Renderer>(tree);
+        let focused_state = state.is_focused.is_some();
+        if focused_state
+            && !previously_focused
+            && let Some(message) = self.on_focus.clone()
+        {
+            shell.publish(message);
+        } else if !focused_state
+            && previously_focused
+            && let Some(message) = self.on_blur.clone()
+        {
+            shell.publish(message);
+        }
+
         let is_disabled = self.on_input.is_none();
 
         let status = if is_disabled {
